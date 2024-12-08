@@ -6,9 +6,27 @@ import os
 from dotenv import load_dotenv
 from typing import List, Dict
 import datetime
+import time
 
 
-load_dotenv('../.env')
+load_dotenv('./.env')
+
+tempo_inicio = time.time()
+
+
+def seconds_to_hms(seconds):
+    """
+    Converte segundos para horas, minutos e segundos
+    :param seconds: int ou float
+    :return: str
+    """
+    if seconds is None or not isinstance(seconds, (int, float)):
+        return "---"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = int(seconds % 60)
+        return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
 def format_timestamp(seconds: float) -> str:
@@ -32,7 +50,7 @@ def segment_audio_by_speakers(audio_path: str, segments: List[Dict]) -> List[Dic
     )
     model.to(device)
 
-    processor = AutoProcessor.from_pretrained(os.getenv("WHISPER_VERSAO"))
+    processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
 
     # Carrega o áudio
     audio, sr = librosa.load(audio_path, sr=16000)
@@ -109,9 +127,10 @@ def process_audio(audio_path, hf_token):
 
     return transcribed_segments
 
+
 if __name__ == "__main__":
     HF_TOKEN = os.getenv("HF_TOKEN")
-    AUDIO_PATH = "./audios/noticia.mp3"
+    AUDIO_PATH = "./audios/noticia3.mp4"
 
     try:
         results = process_audio(AUDIO_PATH, HF_TOKEN)
@@ -124,6 +143,12 @@ if __name__ == "__main__":
             text = segment["text"]
 
             print(f"[{timestamp}] ({speaker}) - {text}")
+
+        tempo_fim = time.time()
+        tempo_total = tempo_fim - tempo_inicio
+        tempo_total = time.strftime("%H:%M:%S", time.gmtime(tempo_total))
+
+        print(f"\n\n{tempo_total}")
 
     except Exception as e:
         print(f"Erro ao processar o áudio: {str(e)}")
