@@ -1,17 +1,15 @@
 import torch
 from pyannote.audio import Pipeline
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import librosa
 import os
 from dotenv import load_dotenv
 from typing import List, Dict
 import datetime
+import soundfile as sf
 import time
 
-
 load_dotenv('./.env')
-
-tempo_inicio = time.time()
 
 
 def seconds_to_hms(seconds):
@@ -43,14 +41,27 @@ def segment_audio_by_speakers(audio_path: str, segments: List[Dict]) -> List[Dic
 
     # Initialize Whisper
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        "openai/whisper-large-v3-turbo",
+        os.getenv("WHISPER_VERSAO"),
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         use_safetensors=True
     )
     model.to(device)
 
-    processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
+    processor = AutoProcessor.from_pretrained(os.getenv("WHISPER_VERSAO"))
+
+    pipe = pipeline(
+        "automatic-speech-recognition",
+        model=model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
+        max_new_tokens=128,
+        chunk_length_s=30,
+        batch_size=16,
+        torch_dtype=torch_dtype,
+        generate_kwargs={"language": "portuguese"},
+        device=device,
+    )
 
     # Carrega o áudio
     audio, sr = librosa.load(audio_path, sr=16000)
@@ -63,50 +74,33 @@ def segment_audio_by_speakers(audio_path: str, segments: List[Dict]) -> List[Dic
         # Extrai o segmento do áudio
         segment_audio = audio[start_sample:end_sample]
 
-        # Processa o áudio diretamente com o processor
-        inputs = processor(
-            segment_audio,
-            sampling_rate=16000,
-            return_tensors="pt"
-        )
+        # Salva temporariamente o segmento
+        temp_path = f"temp_segment_{segment['start']}_{segment['end']}.wav"
+        sf.write(temp_path, segment_audio, sr)
 
-        # Converte inputs para o mesmo tipo do modelo
-        inputs = {k: v.to(device, dtype=torch_dtype) for k, v in inputs.items()}
-
-        # Força o uso de pt-BR
-        forced_decoder_ids = processor.get_decoder_prompt_ids(language="pt", task="transcribe")
-
-        # Gera a transcrição
-        with torch.no_grad():
-            generated_ids = model.generate(
-                **inputs,
-                forced_decoder_ids=forced_decoder_ids,
-                max_new_tokens=256
-            )
-        transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        # Transcreve o segmento
+        result = pipe(temp_path)
 
         # Adiciona a transcrição ao dicionário do segmento
-        segment["text"] = transcription.strip()
+        segment["text"] = result["text"].strip()
         transcribed_segments.append(segment)
+
+        os.remove(temp_path)
 
     return transcribed_segments
 
 
 def process_audio(audio_path, hf_token):
-    # Device configuration
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Initialize Pyannote
     diarization = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token
+        use_auth_token=os.getenv("HF_TOKEN")
     )
     diarization = diarization.to(torch.device(device))
 
-    # Load audio file
     audio, sr = librosa.load(audio_path, sr=16000)
 
-    # Perform diarization
     diarization_result = diarization({
         "waveform": torch.from_numpy(audio).unsqueeze(0),
         "sample_rate": sr
@@ -129,11 +123,14 @@ def process_audio(audio_path, hf_token):
 
 
 if __name__ == "__main__":
-    HF_TOKEN = os.getenv("HF_TOKEN")
-    AUDIO_PATH = "./audios/noticia3.mp4"
+    tempo_inicio = time.time()
 
     try:
-        results = process_audio(AUDIO_PATH, HF_TOKEN)
+        results = process_audio(
+            "./audios/noticia.mp3",
+            os.getenv("HF_TOKEN")
+        )
+
         print("\nTranscrição com timestamps e falantes:")
         print("=====================================\n")
 
