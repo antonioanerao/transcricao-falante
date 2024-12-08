@@ -1,13 +1,12 @@
 import torch
-import numpy as np
 from pyannote.audio import Pipeline
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 import librosa
 import os
 from dotenv import load_dotenv
 from typing import List, Dict
 import datetime
-import soundfile as sf
+
 
 load_dotenv('../.env')
 
@@ -33,48 +32,47 @@ def segment_audio_by_speakers(audio_path: str, segments: List[Dict]) -> List[Dic
     )
     model.to(device)
 
-    processor = AutoProcessor.from_pretrained("openai/whisper-large-v3-turbo")
-
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model,
-        tokenizer=processor.tokenizer,
-        feature_extractor=processor.feature_extractor,
-        max_new_tokens=128,
-        chunk_length_s=30,
-        batch_size=16,
-        torch_dtype=torch_dtype,
-        device=device,
-    )
+    processor = AutoProcessor.from_pretrained(os.getenv("WHISPER_VERSAO"))
 
     # Carrega o áudio
     audio, sr = librosa.load(audio_path, sr=16000)
-    
     transcribed_segments = []
-    
+
     for segment in segments:
         start_sample = int(segment["start"] * sr)
         end_sample = int(segment["end"] * sr)
-        
+
         # Extrai o segmento do áudio
         segment_audio = audio[start_sample:end_sample]
-        
-        # Salva temporariamente o segmento
-        temp_path = f"temp_segment_{segment['start']}_{segment['end']}.wav"
-        sf.write(temp_path, segment_audio, sr)
-        
-        # Transcreve o segmento
-        result = pipe(temp_path)
-        
+
+        # Processa o áudio diretamente com o processor
+        inputs = processor(
+            segment_audio,
+            sampling_rate=16000,
+            return_tensors="pt"
+        )
+
+        # Converte inputs para o mesmo tipo do modelo
+        inputs = {k: v.to(device, dtype=torch_dtype) for k, v in inputs.items()}
+
+        # Força o uso de pt-BR
+        forced_decoder_ids = processor.get_decoder_prompt_ids(language="pt", task="transcribe")
+
+        # Gera a transcrição
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                forced_decoder_ids=forced_decoder_ids,
+                max_new_tokens=256
+            )
+        transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
         # Adiciona a transcrição ao dicionário do segmento
-        segment["text"] = result["text"].strip()
+        segment["text"] = transcription.strip()
         transcribed_segments.append(segment)
-        
-        # Remove o arquivo temporário
-        import os
-        os.remove(temp_path)
-    
+
     return transcribed_segments
+
 
 def process_audio(audio_path, hf_token):
     # Device configuration
@@ -107,28 +105,25 @@ def process_audio(audio_path, hf_token):
             "end": end_time
         })
 
-    # Segment and transcribe audio
     transcribed_segments = segment_audio_by_speakers(audio_path, speakers_segments)
-    
+
     return transcribed_segments
 
 if __name__ == "__main__":
-    # You need to replace this with your Hugging Face token
     HF_TOKEN = os.getenv("HF_TOKEN")
-    AUDIO_PATH = "./noticia.mp3"
-    
+    AUDIO_PATH = "./audios/noticia.mp3"
+
     try:
         results = process_audio(AUDIO_PATH, HF_TOKEN)
-        
         print("\nTranscrição com timestamps e falantes:")
         print("=====================================\n")
-        
+
         for segment in results:
             timestamp = format_timestamp(segment["start"])
             speaker = segment["speaker"].replace("SPEAKER_", "Falante ")
             text = segment["text"]
-            
+
             print(f"[{timestamp}] ({speaker}) - {text}")
-            
+
     except Exception as e:
         print(f"Erro ao processar o áudio: {str(e)}")
